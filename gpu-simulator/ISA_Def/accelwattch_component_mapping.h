@@ -160,6 +160,7 @@ static const std::unordered_map<unsigned, unsigned> OpcodePowerMap = {
     {OP_GETLMEMBASE, OTHER_OP},
     {OP_LEPC, OTHER_OP},
     {OP_NOP, OTHER_OP},
+    {OP_SETMAXNREG, OTHER_OP},
     {OP_PMTRIG, OTHER_OP},
     {OP_R2B, OTHER_OP},
     {OP_S2R, OTHER_OP},

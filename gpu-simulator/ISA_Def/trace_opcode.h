@@ -252,6 +252,8 @@ enum TraceInstrOpcode {
   // Replay region markers (pseudo-opcodes for spinlock simulation)
   OP_REPLAY_START,
   OP_REPLAY_END,
+  // Hopper register allocation control
+  OP_SETMAXNREG,
   SASS_NUM_OPCODES /* The total number of opcodes. */
 };
 typedef enum TraceInstrOpcode sass_op_type;

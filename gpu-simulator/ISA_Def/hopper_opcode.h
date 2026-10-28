@@ -278,7 +278,7 @@ static const std::unordered_map<std::string, OpcodeChar> Hopper_OpcodeMap = {
     {"SETLMEMBASE", OpcodeChar(OP_SETLMEMBASE, ALU_OP)},
     {"VOTE", OpcodeChar(OP_VOTE, ALU_OP)},
     {"VOTE_VTG", OpcodeChar(OP_VOTE_VTG, ALU_OP)},
-    {"USETMAXREG", OpcodeChar(OP_NOP, ALU_OP)},
+    {"USETMAXREG", OpcodeChar(OP_SETMAXNREG, ALU_OP)},
     {"PREEXIT", OpcodeChar(OP_NOP, ALU_OP)},
     {"USETSHMSZ", OpcodeChar(OP_NOP, ALU_OP)},
 
