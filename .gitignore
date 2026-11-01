@@ -19,4 +19,6 @@ compile_commands.json
 # LLM tools
 .claude
 CLAUDE.md
+AGENTS.md
 .cursor
+.serena
