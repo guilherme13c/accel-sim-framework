@@ -58,6 +58,142 @@
 #include "option_parser.h"
 #include "trace_driven.h"
 
+namespace {
+[[noreturn]] void allocation_trace_error(unsigned pc, const char *reason) {
+  fprintf(stderr, "Accel-Sim: invalid USETMAXREG trace at PC 0x%x: %s\n", pc,
+          reason);
+  abort();
+}
+}  // namespace
+
+const inst_trace_t &trace_shd_warp_t::trace_at(unsigned index) {
+  return m_stream ? m_stream->get(index) : warp_traces.at(index);
+}
+
+bool trace_shd_warp_t::begin_allocation_loop() {
+  const unsigned total = trace_total_count();
+  const auto &regions = m_kernel_info->get_trace_info()->allocation_regions;
+  const allocation_replay_region *region = nullptr;
+  for (const auto &r : regions)
+    if (trace_at(trace_pc).m_pc == r.entry) region = &r;
+  if (!region) return false;
+  const auto r = *region;
+  if (m_replay_active)
+    allocation_trace_error(r.entry,
+                           "allocation region nested in ordinary replay");
+
+  unsigned cursor = trace_pc;
+  bool repeat;
+  std::vector<std::string> signatures;
+  do {
+    const bool first_iteration = cursor == trace_pc;
+    unsigned offset = 0;
+    bool saw_allocation = false;
+    unsigned previous_pc = 0;
+    unsigned branch_mask = 0;
+    for (;;) {
+      if (cursor == total)
+        allocation_trace_error(r.entry, "truncated allocation region");
+      // Streaming lookup can invalidate references; do not retain one across
+      // it.
+      const auto &entry = trace_at(cursor);
+      if (entry.m_pc < r.entry || entry.m_pc > r.branch ||
+          (offset && entry.m_pc <= previous_pc) || entry.reg_dsts_num != 0 ||
+          entry.reg_srcs_num != 0 ||
+          (entry.mask != 0xffffffff &&
+           !((entry.m_pc == r.branch || entry.m_pc == r.allocation) &&
+             entry.mask == 0)))
+        allocation_trace_error(
+            r.entry, "invalid control flow or mask in allocation region");
+      if (entry.m_pc == r.allocation) {
+        if (entry.opcode != "USETMAXREG.TRY_ALLOC.CTAPOOL" || saw_allocation)
+          allocation_trace_error(r.entry,
+                                 "invalid allocation instruction metadata");
+        saw_allocation = true;
+        if (first_iteration) m_allocation_attempt = offset;
+      } else if (entry.opcode.find("USETMAXREG") == 0) {
+        allocation_trace_error(r.entry, "unexpected allocation in region");
+      }
+      if (entry.m_pc == r.branch) {
+        if (entry.opcode != "BRA" || entry.imm != r.entry || !saw_allocation)
+          allocation_trace_error(r.entry, "invalid allocation retry branch");
+        branch_mask = entry.mask;
+      } else if (entry.opcode.find("BRA") == 0 || entry.opcode == "EXIT" ||
+                 entry.memadd_info != nullptr ||
+                 entry.opcode == "REPLAY_START" ||
+                 entry.opcode == "REPLAY_END") {
+        allocation_trace_error(
+            r.entry, "unsupported side effect or nested control flow");
+      }
+      std::ostringstream signature;
+      signature << entry.m_pc << ':' << entry.opcode << ':' << entry.imm << ':'
+                << entry.imm2 << ':'
+                << (entry.m_pc == r.branch ? 0 : entry.mask);
+      if (first_iteration) {
+        signatures.push_back(signature.str());
+        m_allocation_loop.emplace_back(get_shader()->get_config());
+        m_allocation_loop.back().parse_from_trace_struct(
+            entry, m_kernel_info->OpcodeMap, m_kernel_info->m_tconfig,
+            m_kernel_info->m_kernel_trace_info);
+      } else if (offset >= signatures.size() ||
+                 signatures[offset] != signature.str()) {
+        allocation_trace_error(r.entry,
+                               "allocation body changed between iterations");
+      }
+      previous_pc = entry.m_pc;
+      ++offset;
+      ++cursor;
+      if (previous_pc == r.branch) break;
+    }
+    if (offset != m_allocation_loop.size())
+      allocation_trace_error(r.entry, "allocation iteration length changed");
+    if (cursor == total)
+      allocation_trace_error(r.entry, "missing allocation region exit");
+    repeat = branch_mask == 0xffffffff;
+    if (trace_at(cursor).m_pc != (repeat ? r.entry : r.exit))
+      allocation_trace_error(
+          r.entry, "recorded branch disagrees with region boundaries");
+  } while (repeat);
+
+  trace_pc = cursor;
+  m_allocation_next = 0;
+  m_allocation_result = warp_inst_t::SETMAXNREG_NOT_EXECUTED;
+  return true;
+}
+
+const trace_warp_inst_t *trace_shd_warp_t::next_allocation_inst() {
+  // Do not fetch past the retry branch, or decide its mask before TRY_ALLOC
+  // has issued. The shared decoder also disables its second fetch in replay.
+  if (m_allocation_next == m_allocation_loop.size() ||
+      (m_allocation_next == m_allocation_loop.size() - 1 &&
+       m_allocation_result == warp_inst_t::SETMAXNREG_NOT_EXECUTED))
+    return nullptr;
+  auto *inst = new trace_warp_inst_t(m_allocation_loop[m_allocation_next++]);
+  if (m_allocation_next == m_allocation_loop.size())
+    inst->set_active(active_mask_t(
+        m_allocation_result == warp_inst_t::SETMAXNREG_FAILED ? 0xffffffff
+                                                              : 0));
+  return inst;
+}
+
+void trace_shd_warp_t::observe_allocation_issue(const warp_inst_t &inst) {
+  if (m_allocation_loop.empty()) return;
+  if (inst.pc == m_allocation_loop[m_allocation_attempt].pc) {
+    assert(inst.is_setmaxnreg_try_alloc());
+    assert(m_allocation_result == warp_inst_t::SETMAXNREG_NOT_EXECUTED);
+    m_allocation_result = inst.get_setmaxnreg_result();
+    assert(m_allocation_result != warp_inst_t::SETMAXNREG_NOT_EXECUTED);
+  } else if (inst.pc == m_allocation_loop.back().pc) {
+    assert(m_allocation_next == m_allocation_loop.size());
+    if (m_allocation_result == warp_inst_t::SETMAXNREG_FAILED) {
+      m_allocation_next = 0;
+      m_allocation_result = warp_inst_t::SETMAXNREG_NOT_EXECUTED;
+    } else {
+      m_allocation_loop.clear();
+    }
+  }
+}
+
 bool trace_shd_warp_t::handle_replay_region_exit() {
   if (!get_trywait_acquired()) {
     // mbarrier not acquired — loop back
@@ -82,6 +218,7 @@ bool trace_shd_warp_t::handle_replay_region_exit() {
 }
 
 const trace_warp_inst_t *trace_shd_warp_t::get_next_trace_inst() {
+  if (!m_allocation_loop.empty()) return next_allocation_inst();
   unsigned total = trace_total_count();
   if (trace_pc >= total) {
     // Handle missing REPLAY_END - trace ended while in replay region
@@ -91,6 +228,12 @@ const trace_warp_inst_t *trace_shd_warp_t::get_next_trace_inst() {
     }
     return NULL;
   }
+
+  if (begin_allocation_loop()) return next_allocation_inst();
+  if (trace_at(trace_pc).opcode == "USETMAXREG.TRY_ALLOC.CTAPOOL")
+    allocation_trace_error(trace_at(trace_pc).m_pc,
+                           "TRY_ALLOC requires setmaxnreg replay metadata; "
+                           "regenerate or annotate the trace");
 
   // Access instruction via stream or warp_traces
   auto &inst = m_stream ? m_stream->get(trace_pc) : warp_traces[trace_pc];
@@ -161,10 +304,16 @@ void trace_shd_warp_t::clear() {
   m_replay_active = false;
   m_replay_start_trace_pc = 0;
   m_replay_iterations = 0;
+  m_allocation_loop.clear();
+  m_allocation_next = 0;
+  m_allocation_attempt = 0;
+  m_allocation_result = warp_inst_t::SETMAXNREG_NOT_EXECUTED;
 }
 
 // functional_done
-bool trace_shd_warp_t::trace_done() { return trace_pc == trace_total_count(); }
+bool trace_shd_warp_t::trace_done() {
+  return m_allocation_loop.empty() && trace_pc == trace_total_count();
+}
 
 address_type trace_shd_warp_t::get_start_trace_pc() {
   if (m_stream) {
@@ -176,6 +325,10 @@ address_type trace_shd_warp_t::get_start_trace_pc() {
 }
 
 address_type trace_shd_warp_t::get_pc() {
+  if (!m_allocation_loop.empty())
+    return m_allocation_loop[std::min<size_t>(m_allocation_next,
+                                              m_allocation_loop.size() - 1)]
+        .pc;
   unsigned total = trace_total_count();
   assert(total > 0);
   assert(trace_pc < total);
@@ -374,6 +527,19 @@ bool trace_warp_inst_t::parse_from_trace_struct(
 
   // handle special cases and fill memory space
   switch (m_opcode) {
+    case OP_SETMAXNREG: {
+      const bool increase = opcode == "USETMAXREG.TRY_ALLOC.CTAPOOL";
+      if ((!increase && opcode != "USETMAXREG.DEALLOC.CTAPOOL") ||
+          trace.reg_srcs_num != 0 || trace.reg_dsts_num != 0 ||
+          trace.imm < 24 || trace.imm > 256 || trace.imm % 8 != 0 ||
+          trace.imm2 != 0 || (trace.mask != 0 && trace.mask != 0xffffffff))
+        allocation_trace_error(trace.m_pc,
+                               "expected a uniform CTAPOOL operation with an "
+                               "immediate target in [24,256], divisible by 8");
+      set_setmaxnreg(increase ? SETMAXNREG_INC : SETMAXNREG_DEC,
+                     static_cast<unsigned>(trace.imm), SETMAXNREG_SASS_CTAPOOL);
+      break;
+    }
     case OP_LDC:  // handle Load from Constant
       data_size = 4;
       memory_op = memory_load;
@@ -1152,6 +1318,9 @@ void trace_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
 }
 
 void trace_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
+  // The backend writes the attempt's outcome on this issued pipeline copy.
+  static_cast<trace_shd_warp_t *>(m_warp[inst.warp_id()])
+      ->observe_allocation_issue(inst);
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
       unsigned warpId = inst.warp_id();

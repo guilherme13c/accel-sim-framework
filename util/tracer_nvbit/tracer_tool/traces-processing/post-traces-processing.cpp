@@ -1,3 +1,4 @@
+#include "../setmaxnreg_replay.h"
 #include <condition_variable>
 #include <deque>
 #include <fstream>
@@ -167,6 +168,8 @@ public:
   }
 };
 
+// Populated before workers start; read-only during post-processing.
+static std::map<std::string, std::vector<setmaxnreg_replay::region>> allocation_sass;
 std::vector<std::string> kernelslist_list;
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv) {
@@ -183,6 +186,7 @@ int main(int argc, char **argv) {
             "files\n";
     cerr << "  -j N: limit to N parallel threads (default: 8)\n";
     cerr << "  --text: output .traceg (plain text) instead of .tracez\n";
+    cerr << "  --setmaxnreg-sass FILE: annotate legacy raw traces using cuobjdump SASS\n";
     return 1;
   }
 
@@ -192,6 +196,17 @@ int main(int argc, char **argv) {
       max_threads = atoi(argv[++i]);
       if (max_threads < 1)
         max_threads = 1;
+    } else if (string(argv[i]) == "--setmaxnreg-sass") {
+      if (i + 1 == argc) {
+        cerr << "--setmaxnreg-sass requires a SASS filename" << endl;
+        return 1;
+      }
+      try {
+        allocation_sass = setmaxnreg_replay::read_sass(argv[++i]);
+      } catch (const std::exception &e) {
+        cerr << "Invalid allocation replay SASS: " << e.what() << endl;
+        return 1;
+      }
     } else if (string(argv[i]) == "--text") {
       use_tracez = false;
     }
@@ -868,6 +883,27 @@ void group_per_block(const string &filepath, bool use_tracez) {
   }
 
   pclose(source_fp);
+
+  if (!allocation_sass.empty()) {
+    std::string kernel;
+    std::vector<std::string> recorded;
+    for (const auto &header : header_lines) {
+      const std::string prefix = "-kernel name = ";
+      if (header.compare(0, prefix.size(), prefix) == 0)
+        kernel = header.substr(prefix.size());
+      if (header.compare(0, std::string("-setmaxnreg replay =").size(), "-setmaxnreg replay =") == 0)
+        recorded.push_back(header);
+    }
+    auto found = allocation_sass.find(kernel);
+    if (found == allocation_sass.end())
+      throw std::runtime_error("SASS has no matching kernel: " + kernel);
+    std::vector<std::string> described;
+    for (const auto &r : found->second) described.push_back(r.header());
+    if (!recorded.empty() && recorded != described)
+      throw std::runtime_error("SASS disagrees with recorded allocation metadata");
+    if (recorded.empty())
+      header_lines.insert(header_lines.begin(), described.begin(), described.end());
+  }
 
   drop_unused_trywaits(filepath_str, insts, lineinfo);
 

@@ -33,6 +33,9 @@
 
 /* contains definition of the inst_trace_t structure */
 #include "common.h"
+#include "setmaxnreg_replay.h"
+
+static std::map<CUfunction, std::vector<setmaxnreg_replay::region>> allocation_regions;
 
 /* contains definition of the WarpsyncCollectiveWatchdog structure */
 #include "watchdog.h"
@@ -393,6 +396,21 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     }
 
     const std::vector<Instr *> &instrs = nvbit_get_instrs(ctx, f);
+    std::vector<setmaxnreg_replay::instruction> allocation_code;
+    for (auto *ins : instrs)
+      allocation_code.push_back({static_cast<unsigned>(ins->getOffset()), ins->getSass()});
+    try {
+      allocation_regions[f] = setmaxnreg_replay::analyze(allocation_code);
+      if (!allocation_regions[f].empty() &&
+          (f != func || spinlock_handling_mode != SPINLOCK_MODE_NONE ||
+           instr_begin_interval != 0 || instr_end_interval != UINT32_MAX))
+        throw std::runtime_error("allocation replay requires a complete kernel trace, without spinlock filtering or device calls");
+    } catch (const std::exception &e) {
+      fprintf(stderr, "NVBit: cannot describe allocation replay in %s: %s\n",
+              func_name.c_str(), e.what());
+      exit(EXIT_FAILURE);
+    }
+
     if (verbose >= 1) {
       printf("Inspecting function %s at address 0x%lx\n",
              nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
@@ -749,6 +767,8 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func,
             allow_reg_val_tracing ? TRACER_VERSION_ALLOW_REG_VAL
                                   : TRACER_VERSION);
     fprintf(ctx_resultsFile[ctx], "-enable lineinfo = %d\n", lineinfo);
+    for (const auto &r : allocation_regions[func])
+      fprintf(ctx_resultsFile[ctx], "%s\n", r.header().c_str());
     fprintf(ctx_resultsFile[ctx], "\n");
 
     if (allow_reg_val_tracing) {

@@ -193,3 +193,41 @@ This line represents:
 - Opcode: `IMAD.MOV.U32`  
 - Two source registers: `R255`, `R255`  
 - Not a memory instruction (`mem_width = 0`)
+
+
+## Hopper register-allocation replay
+
+The tracer describes supported `USETMAXREG.TRY_ALLOC.CTAPOOL` retry regions in
+kernel headers. Accel-Sim uses simulated register availability to repeat or leave
+these regions, independently of the retry count observed on hardware. Use
+`SPINLOCK_HANDLING_MODE=0` and record the complete kernel when capturing them.
+
+For existing raw traces, annotate during post-processing using the SASS saved
+from the exact executable that produced the trace:
+
+```bash
+post-traces-processing <raw-kernelslist> --setmaxnreg-sass <kernel.sass> --text
+post-traces-processing <raw-kernelslist> --setmaxnreg-sass <kernel.sass>
+```
+
+`--text` produces readable `.traceg`; the default produces `.tracez`. Keep the
+raw files and copy `kernelslist.g` after each pass if both formats are needed.
+Both formats preserve this versioned header extension:
+
+```text
+-setmaxnreg replay = 1 <entry-PC> <allocation-PC> <retry-branch-PC> <exit-PC>
+```
+
+PCs are hexadecimal and relative to the kernel function. The entry PC also identifies the region. Each descriptor applies
+to any warp reaching its entry PC. The producer verifies a conditional back-edge
+controlled by allocation failure, one allocation per iteration, and a repeatable
+body. Currently supported bodies contain warp synchronization, dependency
+barriers, NOPs, and the `PLOP3.LUT` conversion of the uniform allocation result.
+Instruction count and spacing are not fixed. Nested regions, other side effects,
+unknown predicate transformations, device-function allocation loops, and branches
+into a region's interior are rejected. Unannotated `TRY_ALLOC` traces must be
+recaptured or annotated; no instruction-sequence fallback is used.
+
+Replay retains the simulator's existing dependency-barrier timing model. This
+feature does not add a general SASS predicate interpreter or a hardware scoreboard
+model for every use of `DEPBAR`.

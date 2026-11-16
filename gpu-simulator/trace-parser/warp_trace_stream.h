@@ -222,15 +222,14 @@ class WarpTraceStream {
 
     if (sc == buf_[active_].sc_id) {
       // Hit: in active buffer
-    } else if (sc == buf_[1 - active_].sc_id) {
-      // In back buffer (prefetched) — swap and prefetch next
-      join_prefetch();
-      active_ = 1 - active_;
-      start_prefetch(sc + 1);
     } else {
-      // Miss: not in either buffer — load synchronously
+      // A backwards lookup may match the back buffer's old sc_id while
+      // prefetch is replacing its contents. Check it only after joining.
       join_prefetch();
-      load_into_buffer(active_, sc);
+      if (sc == buf_[1 - active_].sc_id)
+        active_ = 1 - active_;
+      else
+        load_into_buffer(active_, sc);
       start_prefetch(sc + 1);
     }
 

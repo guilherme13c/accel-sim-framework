@@ -174,7 +174,11 @@ class trace_shd_warp_t : public shd_warp_t {
   }
 
   // Replay region support
-  bool is_in_replay() const override { return m_replay_active; }
+  bool is_in_replay() const override {
+    return m_replay_active || !m_allocation_loop.empty();
+  }
+
+  void observe_allocation_issue(const warp_inst_t &inst);
 
   // Roll back trace_pc for TRYWAIT retry (called from issue_warp)
   void rollback_trace_pc() {
@@ -190,6 +194,18 @@ class trace_shd_warp_t : public shd_warp_t {
   bool m_replay_active;
   unsigned m_replay_start_trace_pc;
   unsigned m_replay_iterations;  // Count of replay loop iterations for deadlock
+
+  // Cache one metadata-described allocation iteration. Hardware iterations
+  // are skipped; the issued allocation result controls simulated retries.
+  std::vector<trace_warp_inst_t> m_allocation_loop;
+  unsigned m_allocation_next = 0;
+  unsigned m_allocation_attempt = 0;
+  warp_inst_t::setmaxnreg_result m_allocation_result =
+      warp_inst_t::SETMAXNREG_NOT_EXECUTED;
+
+  const inst_trace_t &trace_at(unsigned index);
+  bool begin_allocation_loop();
+  const trace_warp_inst_t *next_allocation_inst();
 
   // Returns true if replay region exited (proceed), false if looped back
   bool handle_replay_region_exit();

@@ -464,6 +464,29 @@ static void parse_kernel_header_line(const std::string &line,
            &kernel_info->tb_dim_y, &kernel_info->tb_dim_z);
   } else if (string1 == "shmem" && string2 == "=") {
     sscanf(line.c_str(), "-shmem = %d", &kernel_info->shmem);
+  } else if (string1 == "setmaxnreg" && string2 == "replay") {
+    std::istringstream metadata(line.substr(line.find('=') + 1));
+    unsigned version;
+    allocation_replay_region r;
+    std::string extra;
+    if (!(metadata >> version) || version != 1 ||
+        !(metadata >> std::hex >> r.entry >> r.allocation >> r.branch >>
+          r.exit) ||
+        (metadata >> extra) || r.entry >= r.allocation ||
+        r.allocation >= r.branch || r.branch >= r.exit ||
+        (r.entry | r.allocation | r.branch | r.exit) % 16) {
+      fprintf(
+          stderr,
+          "Accel-Sim: malformed or unsupported setmaxnreg replay metadata\n");
+      abort();
+    }
+    for (const auto &prior : kernel_info->allocation_regions) {
+      if (r.entry <= prior.branch && prior.entry <= r.branch) {
+        fprintf(stderr, "Accel-Sim: overlapping setmaxnreg replay regions\n");
+        abort();
+      }
+    }
+    kernel_info->allocation_regions.push_back(r);
   } else if (string1 == "nregs") {
     sscanf(line.c_str(), "-nregs = %d", &kernel_info->nregs);
   } else if (string1 == "cuda" && string2 == "stream") {

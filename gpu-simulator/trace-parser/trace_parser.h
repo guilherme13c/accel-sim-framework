@@ -166,10 +166,15 @@ class PipeReader {
 
 class TracezReader;  // forward declaration
 
+struct allocation_replay_region {
+  unsigned entry, allocation, branch, exit;
+};
+
 struct kernel_trace_t {
   kernel_trace_t(const std::string &filePath);
   ~kernel_trace_t();
 
+  std::vector<allocation_replay_region> allocation_regions;
   std::string kernel_name;
   unsigned kernel_id;
   unsigned grid_dim_x;
