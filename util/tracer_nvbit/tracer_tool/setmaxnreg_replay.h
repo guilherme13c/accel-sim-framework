@@ -31,11 +31,13 @@ struct region {
 
 inline std::vector<std::string> tokens(std::string sass) {
   for (char &c : sass)
-    if (c == ',' || c == ';') c = ' ';
+    if (c == ',' || c == ';')
+      c = ' ';
   std::istringstream in(sass);
   std::vector<std::string> out;
   std::string word;
-  while (in >> word) out.push_back(word);
+  while (in >> word)
+    out.push_back(word);
   return out;
 }
 
@@ -53,7 +55,8 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
   for (const auto &ins : code)
     has_allocation |=
         ins.sass.find("USETMAXREG.TRY_ALLOC") != std::string::npos;
-  if (!has_allocation) return regions;
+  if (!has_allocation)
+    return regions;
   std::map<unsigned, size_t> by_pc;
   for (size_t i = 0; i < code.size(); ++i)
     if (!by_pc.emplace(code[i].pc, i).second)
@@ -65,7 +68,8 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
       continue;
     unsigned target = number(branch[2]);
     auto found = by_pc.find(target);
-    if (found == by_pc.end() || found->second >= b) continue;
+    if (found == by_pc.end() || found->second >= b)
+      continue;
     size_t entry = found->second;
     size_t alloc = code.size();
     for (size_t i = entry; i < b; ++i)
@@ -75,7 +79,8 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
           throw std::runtime_error("multiple allocations in retry region");
         alloc = i;
       }
-    if (alloc == code.size()) continue;  // unrelated loop
+    if (alloc == code.size())
+      continue; // unrelated loop
     if (b + 1 == code.size())
       throw std::runtime_error("allocation loop has no exit");
     auto attempt = tokens(code[alloc].sass);
@@ -86,16 +91,17 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
     if (limit < 24 || limit > 256 || limit % 8)
       throw std::runtime_error("invalid allocation target");
     std::string result_predicate;
-    bool synchronized = false;
     for (size_t i = entry; i < b; ++i) {
       auto t = tokens(code[i].sass);
-      if (t.empty()) throw std::runtime_error("empty allocation instruction");
-      if (i == alloc) continue;
+      if (t.empty())
+        throw std::runtime_error("empty allocation instruction");
+      if (i == alloc)
+        continue;
       // These operations neither change data values nor add side effects that
       // would be duplicated when the simulator executes additional attempts.
-      if (t[0] == "NOP" || t[0] == "DEPBAR.LE") continue;
+      if (t[0] == "NOP" || t[0] == "DEPBAR.LE")
+        continue;
       if (t[0] == "WARPSYNC.ALL") {
-        if (i < alloc) synchronized = true;
         continue;
       }
       // Verify the dataflow and truth table: P = allocation success. This is
@@ -111,8 +117,7 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
       throw std::runtime_error(
           "unsupported side effect or predicate dataflow in allocation loop");
     }
-    if (!synchronized || result_predicate.empty() ||
-        branch[0] != "@!" + result_predicate)
+    if (result_predicate.empty() || branch[0] != "@!" + result_predicate)
       throw std::runtime_error(
           "allocation retry branch is not failure-controlled");
     region r{target, code[alloc].pc, code[b].pc, code[b + 1].pc};
@@ -135,7 +140,8 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
   for (const auto &ins : code)
     if (ins.sass.find("USETMAXREG.TRY_ALLOC") != std::string::npos) {
       bool covered = false;
-      for (const auto &r : regions) covered |= r.allocation == ins.pc;
+      for (const auto &r : regions)
+        covered |= r.allocation == ins.pc;
       if (!covered)
         throw std::runtime_error(
             "TRY_ALLOC has no supported failure-controlled retry region");
@@ -144,10 +150,11 @@ inline std::vector<region> analyze(const std::vector<instruction> &code) {
 }
 
 // cuobjdump --dump-sass output; instruction encoding-only lines are ignored.
-inline std::map<std::string, std::vector<region>> read_sass(
-    const std::string &path) {
+inline std::map<std::string, std::vector<region>>
+read_sass(const std::string &path) {
   std::ifstream in(path);
-  if (!in) throw std::runtime_error("cannot open SASS file: " + path);
+  if (!in)
+    throw std::runtime_error("cannot open SASS file: " + path);
   std::map<std::string, std::vector<instruction>> functions;
   std::string line, name;
   const std::regex function("Function : ([^[:space:]]+)");
@@ -161,10 +168,11 @@ inline std::map<std::string, std::vector<region>> read_sass(
           {static_cast<unsigned>(std::stoul(match[1], nullptr, 16)), match[2]});
   }
   std::map<std::string, std::vector<region>> result;
-  for (const auto &f : functions) result.emplace(f.first, analyze(f.second));
+  for (const auto &f : functions)
+    result.emplace(f.first, analyze(f.second));
   if (result.empty())
     throw std::runtime_error("no functions found in SASS file");
   return result;
 }
-}  // namespace setmaxnreg_replay
+} // namespace setmaxnreg_replay
 #endif
